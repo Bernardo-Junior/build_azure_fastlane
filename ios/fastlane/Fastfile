@@ -1,0 +1,109 @@
+# This file contains the fastlane.tools configuration
+# You can find the documentation at https://docs.fastlane.tools
+#
+# For a list of all available actions, check out
+#
+#     https://docs.fastlane.tools/actions
+#
+# For a list of all available plugins, check out
+#
+#     https://docs.fastlane.tools/plugins/available-plugins
+#
+
+# Uncomment the line if you want fastlane to automatically update itself
+update_fastlane
+
+
+default_platform(:ios)
+
+AZURE_TOKEN = ENV["AZURE_TOKEN"]
+
+TEMP_KEYCHAIN_NAME_DEFAULT = ENV['FASTLANE_USER'] || "fastlane_flutter"
+TEMP_KEYCHAIN_PASSWORD_DEFAULT = ENV['FASTLANE_PASSWORD'] || "temppassword"
+
+
+
+def delete_temp_keychain(name)
+  delete_keychain(
+    name: name
+  ) if File.exist? File.expand_path("~/Library/Keychains/#{name}-db")
+end
+
+def create_temp_keychain(name, password)
+  create_keychain(
+    name: name,
+    password: password,
+    unlock: true,
+    timeout: 300    
+  )
+end
+
+def ensure_temp_keychain(name, password)
+  delete_temp_keychain(name)
+  create_temp_keychain(name, password)
+end
+
+# before_all do
+  # update_fastlane
+# end
+
+platform :ios do
+  desc "Run pod install"
+  lane :pod_install do
+    sh("pod cache clean -all")
+    sh("flutter clean")
+    sh("flutter pub get")
+    sh("gem install cocoapods -v 1.11.2")
+  end
+
+  desc "Runs a clean flutter build"
+  lane :build_flutter do
+    Dir.chdir "../.." do
+      sh("flutter", "clean")
+      sh("flutter", "packages", "get")
+      sh("dart", "tools/env_generator.dart")
+      sh("flutter", "packages", "pub", "run", "build_runner", "build", "--delete-conflicting-outputs")
+      sh("flutter", "build", "ios", "--release", "--no-codesign")
+    end
+  end
+
+  desc "Run Ensure Temp"
+  lane :ensure_temp do 
+    ensure_temp_keychain(TEMP_KEYCHAIN_NAME_DEFAULT, TEMP_KEYCHAIN_PASSWORD_DEFAULT)
+  end
+  
+  desc "Push a new beta build to TestFlight"
+  lane :beta do
+    setup_ci
+    pod_install
+    ensure_temp
+    match(
+      app_identifier: "com.example",
+      type: "appstore",
+      keychain_name: TEMP_KEYCHAIN_NAME_DEFAULT,
+      keychain_password: TEMP_KEYCHAIN_PASSWORD_DEFAULT,
+      readonly: true,
+      verbose: true,
+    )
+    build_flutter
+
+    sync_code_signing(  
+      type: "appstore",
+      readonly: is_ci
+    )
+    build_app(
+      workspace: "Runner.xcworkspace", 
+      scheme: "Runner", 
+      configuration: "AppStore",
+      export_method: "app-store",
+      xcargs: "-allowProvisioningUpdates -verbose",
+      export_team_id: "team_id",
+      use_system_scm: true,
+    )
+    upload_to_testflight(
+      apple_id: "apple_id",
+      skip_waiting_for_build_processing: true
+    )
+    delete_temp_keychain(TEMP_KEYCHAIN_NAME_DEFAULT)
+  end
+end
